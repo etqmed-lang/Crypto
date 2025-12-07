@@ -1,0 +1,303 @@
+"""
+Integrated Crypto Analysis Script
+Features added:
+- On-chain metrics (placeholder calls to Etherscan/Solscan)
+- Telegram alerts (send message when STRONG BUY)
+- Scheduler loop to run every X minutes
+- Config for API keys and logging
+- Clear output structure and simple CSV logger for records
+
+Notes: APIs used are placeholders; you'll need to add real API keys and possibly adjust URLs/endpoints per network.
+"""
+
+import requests
+import time
+import datetime
+import json
+import csv
+from statistics import mean
+
+# -----------------------------------------------------------
+# CONFIGURATION (fill these before running)
+# -----------------------------------------------------------
+GITHUB_API = "https://api.github.com/repos/"
+DEX_SCREENER_API = "https://api.dexscreener.com/latest/dex/tokens/"
+COIN_GECKO = "https://api.coingecko.com/api/v3/coins/"
+SMART_MONEY_API = "https://api.llama.fi/moneyflows/"
+
+# On-chain explorers (placeholders - replace with working endpoints and API keys)
+ETHERSCAN_API_KEY = "YOUR_ETHERSCAN_API_KEY"
+ETHERSCAN_BASE = "https://api.etherscan.io/api"
+SOLSCAN_BASE = "https://public-api.solscan.io"
+
+# Telegram settings (create a bot and populate these)
+TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
+
+# Scheduler interval (seconds)
+RUN_INTERVAL = 60 * 30  # run every 30 minutes
+LOG_CSV = "crypto_signals_log.csv"
+
+# Target tokens list (dynamic)
+TOKENS = [
+    {"symbol": "SOL", "github": "solana-labs/solana", "contract": "So11111111111111111111111111111111111111112", "coingecko_id": "solana", "network": "solana"},
+    {"symbol": "ETH", "github": "ethereum/go-ethereum", "contract": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "coingecko_id": "weth", "network": "ethereum"},
+    {"symbol": "APT", "github": "aptos-labs/aptos-core", "contract": "0x1::aptos_coin::AptosCoin", "coingecko_id": "aptos", "network": "aptos"},
+    {"symbol": "SUI", "github": "MystenLabs/sui", "contract": "0x2::sui::SUI", "coingecko_id": "sui", "network": "sui"}
+]
+
+# -----------------------------------------------------------
+# UTILITIES
+# -----------------------------------------------------------
+
+def safe_get_json(url, params=None, headers=None):
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=15)
+        return r.json() if r.status_code == 200 else {}
+    except Exception as e:
+        print("HTTP error", e)
+        return {}
+
+# -----------------------------------------------------------
+# GITHUB ANALYSIS – DEVELOPMENT METRICS
+# -----------------------------------------------------------
+
+def get_github_activity(repo):
+    commits_url = f"{GITHUB_API}{repo}/commits"
+    issues_url = f"{GITHUB_API}{repo}/issues"
+
+    commits = safe_get_json(commits_url)
+    issues = safe_get_json(issues_url)
+
+    commit_count = len(commits) if isinstance(commits, list) else 0
+    issue_count = len(issues) if isinstance(issues, list) else 0
+
+    return {
+        "commits": commit_count,
+        "issues": issue_count,
+        "score": 1 if commit_count > 8 else 0
+    }
+
+# -----------------------------------------------------------
+# PRICE MOMENTUM – COINGECKO
+# -----------------------------------------------------------
+
+def get_price_trend(coingecko_id):
+    try:
+        url = f"{COIN_GECKO}{coingecko_id}"
+        data = safe_get_json(url)
+
+        md = data.get("market_data", {})
+        price_24h = md.get("price_change_percentage_24h", 0)
+        price_7d = md.get("price_change_percentage_7d", 0)
+        price_30d = md.get("price_change_percentage_30d", 0)
+
+        score = 1 if (price_7d + price_30d) / 2 > 0 else 0
+
+        return {
+            "24h": price_24h,
+            "7d": price_7d,
+            "30d": price_30d,
+            "score": score
+        }
+    except Exception:
+        return {"score": 0}
+
+# -----------------------------------------------------------
+# DEX VOLUME – SHORT TERM TREND
+# -----------------------------------------------------------
+
+def get_dex_volume(token_address):
+    try:
+        url = f"{DEX_SCREENER_API}{token_address}"
+        data = safe_get_json(url)
+
+        # dexscreener response varies; attempt to extract sensible fields
+        volume = data.get("volume", 0) or data.get("pair", {}).get("volume", 0)
+        score = 1 if volume and volume > 5_000_000 else 0
+
+        return {"volume": volume, "score": score}
+    except Exception:
+        return {"score": 0}
+
+# -----------------------------------------------------------
+# SMART MONEY FLOWS – WHALES
+# -----------------------------------------------------------
+
+def get_smart_money(symbol):
+    try:
+        url = f"{SMART_MONEY_API}{symbol.lower()}"
+        data = safe_get_json(url)
+
+        inflow = data.get("inflow", 0)
+        outflow = data.get("outflow", 0)
+
+        score = 1 if inflow > outflow and inflow > 0 else 0
+
+        return {
+            "inflow": inflow,
+            "outflow": outflow,
+            "score": score
+        }
+    except Exception:
+        return {"score": 0}
+
+# -----------------------------------------------------------
+# ON-CHAIN BASIC METRICS (placeholder implementations)
+# -----------------------------------------------------------
+
+def get_onchain_metrics(token):
+    # For Ethereum: use Etherscan to get transfers or holders growth
+    # For Solana: use Solscan public API for token activity
+    try:
+        network = token.get("network")
+        if network == "ethereum":
+            params = {
+                'module': 'account',
+                'action': 'tokentx',
+                'contractaddress': token.get('contract'),
+                'apikey': ETHERSCAN_API_KEY
+            }
+            data = safe_get_json(ETHERSCAN_BASE, params=params)
+            tx_count = len(data.get('result', [])) if isinstance(data.get('result'), list) else 0
+            score = 1 if tx_count > 100 else 0
+            return {"tx_count": tx_count, "score": score}
+        elif network == "solana":
+            # placeholder Solscan call
+            url = f"{SOLSCAN_BASE}/token/meta?tokenAddress={token.get('contract')}"
+            data = safe_get_json(url)
+            tx_count = data.get('txCount', 0)
+            score = 1 if tx_count and tx_count > 100 else 0
+            return {"tx_count": tx_count, "score": score}
+        else:
+            return {"score": 0}
+    except Exception:
+        return {"score": 0}
+
+# -----------------------------------------------------------
+# TELEGRAM ALERTS
+# -----------------------------------------------------------
+
+def telegram_notify(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram not configured; skipping notify")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        return r.json()
+    except Exception as e:
+        print("Telegram error", e)
+        return {}
+
+# -----------------------------------------------------------
+# SCORE SYSTEM – COMBINED SIGNAL ENGINE
+# -----------------------------------------------------------
+
+def analyze_token(token):
+    symbol = token["symbol"]
+    print(f"
+🔍 Analyzing {symbol}...")
+
+    github = get_github_activity(token["github"])
+    price = get_price_trend(token.get("coingecko_id"))
+    volume = get_dex_volume(token.get("contract"))
+    whales = get_smart_money(symbol)
+    onchain = get_onchain_metrics(token)
+
+    # combine scores; note: onchain included as tie-breaker but not counted equally
+    score = github.get("score", 0) + price.get("score", 0) + volume.get("score", 0) + whales.get("score", 0) + onchain.get("score", 0)
+
+    # scale: 0-5
+    if score >= 4:
+        signal = "STRONG BUY"
+    elif score >= 3:
+        signal = "BUY"
+    else:
+        signal = "WAIT / AVOID"
+
+    timestamp = datetime.datetime.utcnow().isoformat()
+
+    result = {
+        "timestamp": timestamp,
+        "symbol": symbol,
+        "score": score,
+        "signal": signal,
+        "components": {
+            "github": github,
+            "price": price,
+            "dex_volume": volume,
+            "smart_money": whales,
+            "onchain": onchain
+        }
+    }
+
+    # log to CSV
+    log_to_csv(result)
+
+    # send alert for strong buys
+    if signal == "STRONG BUY":
+        msg = f"{timestamp} - {symbol} SIGNAL: {signal} (score {score}/5)
+Components: {json.dumps(result['components'])}"
+        telegram_notify(msg)
+
+    return result
+
+# -----------------------------------------------------------
+# LOGGING
+# -----------------------------------------------------------
+
+def log_to_csv(record):
+    header = ["timestamp", "symbol", "score", "signal", "github_commits", "price_7d", "price_30d", "dex_volume", "smart_inflow", "onchain_tx"]
+    row = [
+        record.get('timestamp'),
+        record.get('symbol'),
+        record.get('score'),
+        record.get('signal'),
+        record['components']['github'].get('commits'),
+        record['components']['price'].get('7d'),
+        record['components']['price'].get('30d'),
+        record['components']['dex_volume'].get('volume'),
+        record['components']['smart_money'].get('inflow'),
+        record['components']['onchain'].get('tx_count')
+    ]
+    try:
+        write_header = False
+        try:
+            with open(LOG_CSV, 'r') as f:
+                pass
+        except FileNotFoundError:
+            write_header = True
+
+        with open(LOG_CSV, 'a', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            if write_header:
+                writer.writerow(header)
+            writer.writerow(row)
+    except Exception as e:
+        print("Logging error", e)
+
+# -----------------------------------------------------------
+# MAIN LOOP
+# -----------------------------------------------------------
+
+def run_cycle():
+    results = []
+    for token in TOKENS:
+        res = analyze_token(token)
+        results.append(res)
+    return results
+
+if __name__ == "__main__":
+    print("Starting Crypto Analysis Bot - press Ctrl+C to stop")
+    try:
+        while True:
+            start = time.time()
+            run_cycle()
+            elapsed = time.time() - start
+            sleep_time = max(10, RUN_INTERVAL - elapsed)
+            print(f"Cycle finished at {datetime.datetime.utcnow().isoformat()} - sleeping {sleep_time}s")
+            time.sleep(sleep_time)
+    except KeyboardInterrupt:
+        print("Stopped by user")
